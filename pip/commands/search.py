@@ -11,6 +11,7 @@ from pip.utils import get_terminal_size
 from pip.utils.logging import indent_log
 from pip.exceptions import CommandError
 from pip.status_codes import NO_MATCHES_FOUND
+from pip.req import parse_requirements
 from pip._vendor.packaging.version import parse as parse_version
 from pip._vendor import pkg_resources
 from pip._vendor.six.moves import xmlrpc_client
@@ -35,13 +36,23 @@ class SearchCommand(Command):
             default=PyPI.pypi_url,
             help='Base URL of Python Package Index (default %default)')
 
+        self.cmd_opts.add_option(
+            '-f', '--files',
+            dest='files',
+            action='append',
+            default=[],
+            help='Search packages from the given file. '
+                 'This option can be used multiple times.')
+
         self.parser.insert_option_group(0, self.cmd_opts)
 
     def run(self, options, args):
-        if not args:
-            raise CommandError('Missing required argument (search query).')
-        query = args
-        pypi_hits = self.search(query, options)
+        if not args and not options.files:
+            raise CommandError('Missing required argument (search query or files).')
+        if options.files:
+            pypi_hits = self.search_from_files(options)
+        else:
+            pypi_hits = self.search(args, options)
         hits = transform_hits(pypi_hits)
 
         terminal_width = None
@@ -60,6 +71,23 @@ class SearchCommand(Command):
             pypi = xmlrpc_client.ServerProxy(index_url, transport)
             hits = pypi.search({'name': query, 'summary': query}, 'or')
             return hits
+
+    def search_from_files(self, options):
+        hits = []
+        index_url = options.index
+        with self._build_session(options) as session:
+            transport = PipXmlrpcTransport(index_url, session)
+            pypi = xmlrpc_client.ServerProxy(index_url, transport)
+            for filename in options.files:
+                for req in parse_requirements(filename, constraint=True, options=options, session=session):
+                    try:
+                        version = list(req.specifier)[0].version
+                    except:
+                        version = pypi.package_releases(req.name)[0]
+                    result = pypi.release_data(req.name, version)
+                    if result:
+                        hits.append(result)
+        return hits
 
 
 def transform_hits(hits):
